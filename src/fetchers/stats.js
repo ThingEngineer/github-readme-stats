@@ -39,7 +39,7 @@ const GRAPHQL_REPOS_QUERY = `
 `;
 
 const GRAPHQL_STATS_QUERY = `
-  query userInfo($login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!, $startTime: DateTime = null) {
+  query userInfo($login: String!, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!, $startTime: DateTime = null) {
     user(login: $login) {
       name
       login
@@ -73,7 +73,6 @@ const GRAPHQL_STATS_QUERY = `
       repositoryDiscussionComments(onlyAnswers: true) @include(if: $includeDiscussionsAnswers) {
         totalCount
       }
-      ${GRAPHQL_REPOS_FIELD}
     }
   }
 `;
@@ -85,11 +84,29 @@ const GRAPHQL_STATS_QUERY = `
  * @param {string} token GitHub token.
  * @returns {Promise<import('axios').AxiosResponse>} Axios response.
  */
-const fetcher = (variables, token) => {
-  const query = variables.after ? GRAPHQL_REPOS_QUERY : GRAPHQL_STATS_QUERY;
+const statsFetcherQuery = (variables, token) => {
   return request(
     {
-      query,
+      query: GRAPHQL_STATS_QUERY,
+      variables,
+    },
+    {
+      Authorization: `bearer ${token}`,
+    },
+  );
+};
+
+/**
+ * Repositories fetcher object.
+ *
+ * @param {object} variables Fetcher variables.
+ * @param {string} token GitHub token.
+ * @returns {Promise<AxiosResponse>} Axios response.
+ */
+const reposFetcher = (variables, token) => {
+  return request(
+    {
+      query: GRAPHQL_REPOS_QUERY,
       variables,
     },
     {
@@ -118,41 +135,47 @@ const statsFetcher = async ({
   includeDiscussionsAnswers,
   startTime,
 }) => {
-  let stats;
+  const statsVariables = {
+    login: username,
+    includeMergedPullRequests,
+    includeDiscussions,
+    includeDiscussionsAnswers,
+    startTime,
+  };
+
+  let stats = await retryer(statsFetcherQuery, statsVariables);
+  if (stats.data.errors) {
+    return stats;
+  }
+
   let hasNextPage = true;
   let endCursor = null;
   while (hasNextPage) {
-    const variables = {
+    const repoVariables = {
       login: username,
-      first: 100,
       after: endCursor,
-      includeMergedPullRequests,
-      includeDiscussions,
-      includeDiscussionsAnswers,
-      startTime,
     };
-    let res = await retryer(fetcher, variables);
+    let res = await retryer(reposFetcher, repoVariables);
     if (res.data.errors) {
       return res;
     }
 
-    // Store stats data.
-    const repoNodes = res.data.data.user.repositories.nodes;
-    if (stats) {
-      stats.data.data.user.repositories.nodes.push(...repoNodes);
+    const repos = res.data.data.user.repositories;
+    if (endCursor) {
+      stats.data.data.user.repositories.nodes.push(...repos.nodes);
     } else {
-      stats = res;
+      stats.data.data.user.repositories = repos;
     }
 
     // Disable multi page fetching on public Vercel instance due to rate limits.
-    const repoNodesWithStars = repoNodes.filter(
+    const repoNodesWithStars = repos.nodes.filter(
       (node) => node.stargazers.totalCount !== 0,
     );
     hasNextPage =
       process.env.FETCH_MULTI_PAGE_STARS === "true" &&
-      repoNodes.length === repoNodesWithStars.length &&
-      res.data.data.user.repositories.pageInfo.hasNextPage;
-    endCursor = res.data.data.user.repositories.pageInfo.endCursor;
+      repos.nodes.length === repoNodesWithStars.length &&
+      repos.pageInfo.hasNextPage;
+    endCursor = repos.pageInfo.endCursor;
   }
 
   return stats;

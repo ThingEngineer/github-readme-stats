@@ -115,10 +115,16 @@ beforeEach(() => {
     ) {
       return [200, data_year2003];
     }
-    return [
-      200,
-      req.query.includes("totalCommitContributions") ? data_stats : data_repo,
-    ];
+
+    if (req.query.includes("totalCommitContributions")) {
+      return [200, data_stats];
+    }
+
+    if (req.variables && req.variables.after) {
+      return [200, data_repo];
+    }
+
+    return [200, data_stats];
   });
 });
 
